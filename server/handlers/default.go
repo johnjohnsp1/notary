@@ -46,18 +46,22 @@ func AtomicUpdateHandler(ctx context.Context, w http.ResponseWriter, r *http.Req
 func atomicUpdateHandler(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
 	gun := vars["imageName"]
 	s := ctx.Value("metaStore")
+	logger := ctxu.GetLoggerWithField(ctx, gun, "gun")
 	store, ok := s.(storage.MetaStore)
 	if !ok {
+		logger.Error("500 POST unable to retrieve storage")
 		return errors.ErrNoStorage.WithDetail(nil)
 	}
 	cryptoServiceVal := ctx.Value("cryptoService")
 	cryptoService, ok := cryptoServiceVal.(signed.CryptoService)
 	if !ok {
+		logger.Error("500 POST unable to retrieve signing service")
 		return errors.ErrNoCryptoService.WithDetail(nil)
 	}
 
 	reader, err := r.MultipartReader()
 	if err != nil {
+		logger.Error("400 POST malformed upload")
 		return errors.ErrMalformedUpload.WithDetail(nil)
 	}
 	var updates []storage.MetaUpdate
@@ -68,8 +72,10 @@ func atomicUpdateHandler(ctx context.Context, w http.ResponseWriter, r *http.Req
 		}
 		role := strings.TrimSuffix(part.FileName(), ".json")
 		if role == "" {
+			logger.Error("400 POST empty role filename")
 			return errors.ErrNoFilename.WithDetail(nil)
 		} else if !data.ValidRole(role) {
+			logger.Error("400 POST invalid role filename")
 			return errors.ErrInvalidRole.WithDetail(role)
 		}
 		meta := &data.SignedMeta{}
@@ -78,6 +84,7 @@ func atomicUpdateHandler(ctx context.Context, w http.ResponseWriter, r *http.Req
 		dec := json.NewDecoder(io.TeeReader(part, inBuf))
 		err = dec.Decode(meta)
 		if err != nil {
+			logger.Error("400 POST malformed JSON metadata upload")
 			return errors.ErrMalformedJSON.WithDetail(nil)
 		}
 		version := meta.Signed.Version
@@ -90,6 +97,7 @@ func atomicUpdateHandler(ctx context.Context, w http.ResponseWriter, r *http.Req
 	updates, err = validateUpdate(cryptoService, gun, updates, store)
 	if err != nil {
 		serializable, serializableError := validation.NewSerializableError(err)
+		logger.Error("400 POST invalid update request")
 		if serializableError != nil {
 			return errors.ErrInvalidUpdate.WithDetail(nil)
 		}
@@ -99,9 +107,11 @@ func atomicUpdateHandler(ctx context.Context, w http.ResponseWriter, r *http.Req
 	if err != nil {
 		// If we have an old version error, surface to user with error code
 		if _, ok := err.(storage.ErrOldVersion); ok {
+			logger.Error("400 POST old version update request")
 			return errors.ErrOldVersion.WithDetail(err)
 		}
 		// More generic storage update error, possibly due to attempted rollback
+		logger.Error("500 POST error applying update request")
 		return errors.ErrUpdating.WithDetail(nil)
 	}
 	return nil
